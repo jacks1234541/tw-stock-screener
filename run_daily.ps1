@@ -1,5 +1,9 @@
-# Daily automation: fetch data -> run screener -> build dashboard.
+# Daily automation: fetch data -> run screener -> build dashboard -> publish to GitHub Pages.
 # Called by Windows Task Scheduler at a fixed time each day. Logs go to logs/.
+# Publishing: copies dashboard.html to docs/index.html and pushes to the "master"
+# branch on GitHub; GitHub Pages is configured to serve that folder, so a
+# successful push is what makes https://jacks1234541.github.io/tw-stock-screener/
+# update. Requires git + gh to already be authenticated on this machine.
 #
 # Note: this file intentionally avoids embedding Chinese literals directly,
 # because Windows PowerShell 5.1 parses a .ps1 file using the system's legacy
@@ -17,6 +21,12 @@ Set-Location "C:\futures\stock_picker"
 $env:PYTHONIOENCODING = "utf-8"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
+
+# winget-installed tools (git) may not be on PATH for a freshly spawned process
+# (Task Scheduler runs are always fresh) until this is refreshed from the registry.
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$env:Path = $machinePath + ";" + $userPath
 
 $venvPython = "C:\futures\venv\Scripts\python.exe"
 $logDir = Join-Path $PSScriptRoot "logs"
@@ -38,6 +48,21 @@ try {
     $out2 = & $venvPython build_dashboard.py 2>&1 | Out-String
     Write-Log $out2
     if ($LASTEXITCODE -ne 0) { throw "build_dashboard.py failed, exit code $LASTEXITCODE" }
+
+    Write-Log "----- Publishing to GitHub Pages -----"
+    Copy-Item "dashboard.html" "docs\index.html" -Force
+
+    $gitStatus = git status --porcelain -- docs/index.html
+    if ([string]::IsNullOrWhiteSpace($gitStatus)) {
+        Write-Log "docs/index.html unchanged, nothing to push."
+    } else {
+        git add docs/index.html 2>&1 | Out-String | Write-Log
+        $commitMsg = "Daily update: $(Get-Date -Format 'yyyy-MM-dd')"
+        git commit -m $commitMsg 2>&1 | Out-String | Write-Log
+        git push 2>&1 | Out-String | Write-Log
+        if ($LASTEXITCODE -ne 0) { throw "git push failed, exit code $LASTEXITCODE" }
+        Write-Log "Pushed successfully. https://jacks1234541.github.io/tw-stock-screener/ will update within a minute or two."
+    }
 
     Write-Log "===== DONE $(Get-Date) ====="
 } catch {
