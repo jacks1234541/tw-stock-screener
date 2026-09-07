@@ -52,14 +52,23 @@ try {
     Write-Log "----- Publishing to GitHub Pages -----"
     Copy-Item "dashboard.html" "docs\index.html" -Force
 
+    # Note: deliberately NOT redirecting git's stderr (no 2>&1) - git writes its
+    # normal progress/status text to stderr even on success, and under
+    # $ErrorActionPreference = "Stop" a 2>&1 redirect turns that harmless text
+    # into a terminating NativeCommandError, making a successful push look like
+    # a failure. $LASTEXITCODE is the real signal to check.
     $gitStatus = git status --porcelain -- docs/index.html
     if ([string]::IsNullOrWhiteSpace($gitStatus)) {
         Write-Log "docs/index.html unchanged, nothing to push."
     } else {
-        git add docs/index.html 2>&1 | Out-String | Write-Log
+        git add docs/index.html
+        if ($LASTEXITCODE -ne 0) { throw "git add failed, exit code $LASTEXITCODE" }
+
         $commitMsg = "Daily update: $(Get-Date -Format 'yyyy-MM-dd')"
-        git commit -m $commitMsg 2>&1 | Out-String | Write-Log
-        git push 2>&1 | Out-String | Write-Log
+        git commit -m $commitMsg
+        if ($LASTEXITCODE -ne 0) { throw "git commit failed, exit code $LASTEXITCODE" }
+
+        git push
         if ($LASTEXITCODE -ne 0) { throw "git push failed, exit code $LASTEXITCODE" }
         Write-Log "Pushed successfully. https://jacks1234541.github.io/tw-stock-screener/ will update within a minute or two."
     }
