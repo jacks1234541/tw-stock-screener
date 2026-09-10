@@ -157,6 +157,20 @@
   .pill.accent{ color:var(--accent); background:var(--accent-soft); }
   .signal-badges{ display:inline-flex; gap:6px; flex-wrap:wrap; }
   .spark{ display:block; }
+  .sm-cov{ font-size:10.5px; color:var(--text-3); }
+  .sm-note{ font-size:11.5px; color:var(--text-3); margin-top:2px; }
+  .sm-factor-list{ display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+  .sm-factor-row{ display:grid; grid-template-columns:120px 1fr 34px; align-items:center; gap:8px; font-size:11.5px; }
+  .sm-factor-row .label{ color:var(--text-2); }
+  .sm-factor-bar{ height:6px; border-radius:999px; background:var(--surface-2); overflow:hidden; }
+  .sm-factor-bar .fill{ height:100%; background:var(--accent); border-radius:999px; }
+  .sm-factor-row .val{ text-align:right; color:var(--text-2); }
+  .sm-factor-row.na .fill{ background:var(--text-3); opacity:.25; }
+  .sm-factor-row.na .val{ color:var(--text-3); }
+  .sm-score-head{ display:flex; align-items:baseline; gap:10px; }
+  .sm-score-big{ font-size:32px; font-weight:700; }
+  .sm-score-big.up{ color:var(--up); }
+  .sm-score-big.warn{ color:var(--warn); }
 
   /* ---- detail ---- */
   .detail{ padding:22px; display:flex; flex-direction:column; gap:20px; }
@@ -184,6 +198,9 @@
   .mini-card svg{ display:block; width:100%; height:96px; overflow:visible; }
   #shareSharesChart, #shareHoldersChart{ height:120px; }
   .mini-card .foot{ margin-top:8px; font-size:11.5px; color:var(--text-3); display:flex; justify-content:space-between; }
+  .profile-text{ font-size:13px; line-height:1.6; color:var(--text-2); margin:0 0 12px; min-height:42px; }
+  .profile-link{ font-size:12px; color:var(--accent); text-decoration:none; }
+  .profile-link:hover{ text-decoration:underline; }
 
   .metrics{ display:grid; grid-template-columns:repeat(6,1fr); gap:12px; }
   @media (max-width:820px){ .metrics{ grid-template-columns:repeat(3,1fr); } }
@@ -209,7 +226,7 @@
       <div class="meta" id="metaLine">載入中...</div>
     </div>
     <div class="method">
-      篩選邏輯：三大法人當日合計買超排行前 60 檔，再從中挑出收盤價站上 MA5 &gt; MA20 &gt; MA60（均線多頭排列）、RSI14 落在 45–75、MACD 柱狀圖為正的股票。資料來源為證交所公開 API，僅供研究參考，不構成投資建議。
+      篩選邏輯：三大法人當日合計買超排行前 60 檔，再從中挑出收盤價站上 MA5 &gt; MA20 &gt; MA60（均線多頭排列）或盤整後頸線突破的股票；入選名單再依 Smart Money 疑似建倉分數（0-100，僅供排序參考）排序。資料來源為證交所公開 API，僅供研究參考，不構成投資建議。
     </div>
   </header>
 
@@ -225,6 +242,7 @@
           <th>均線排列</th>
           <th>三大法人合計買超</th>
           <th>散戶持股比例</th>
+          <th>疑似建倉分數</th>
         </tr>
       </thead>
       <tbody id="tableBody"></tbody>
@@ -267,6 +285,20 @@
       </div>
     </div>
 
+    <div class="mini-grid">
+      <div class="mini-card" style="grid-column:1 / -1;">
+        <div class="head-row">
+          <h3>Smart Money 疑似建倉分數</h3>
+          <span class="asof mono" id="smCoverage">—</span>
+        </div>
+        <div class="sm-score-head">
+          <span class="sm-score-big mono" id="smScoreBig">—</span>
+          <span class="sm-note">綜合三大法人、融資結構、集保大戶、量價行為 8 個因子排序用，不影響上方的入選結果；資料不足的因子會自動排除、不拉低分數（見右上角涵蓋率）。</span>
+        </div>
+        <div class="sm-factor-list" id="smFactorList"></div>
+      </div>
+    </div>
+
     <div class="mini-grid" id="shareholdingSection" hidden>
       <div class="mini-card">
         <div class="head-row">
@@ -286,6 +318,26 @@
         <svg id="retailTrendChart" viewBox="0 0 320 96" preserveAspectRatio="none"></svg>
         <div class="foot"><span id="trendMin"></span><span id="trendMax"></span></div>
         <div class="foot" id="trendNotice" style="display:none; margin-top:4px;">資料筆數不足，需每週持續累積才能看到趨勢</div>
+      </div>
+    </div>
+
+    <div class="mini-grid">
+      <div class="mini-card">
+        <h3>公司概況</h3>
+        <p class="profile-text" id="productInfo">—</p>
+        <a class="profile-link" id="investorLink" href="#" target="_blank" rel="noopener">查詢最近法說會資料（MOPS，需自行輸入股票代號）↗</a>
+      </div>
+      <div class="mini-card">
+        <div class="head-row"><h3>月營收年增率 YoY（近四季）</h3></div>
+        <svg id="revenueYoyChart" viewBox="0 0 320 96" preserveAspectRatio="none"></svg>
+        <div class="foot"><span id="revYoyMin"></span><span id="revYoyMax"></span></div>
+        <div class="foot" id="revYoyNotice" style="display:none; margin-top:4px;">資料筆數不足，需每月持續累積才能看到趨勢</div>
+      </div>
+      <div class="mini-card">
+        <div class="head-row"><h3>月營收月增率 MoM（近四季）</h3></div>
+        <svg id="revenueMomChart" viewBox="0 0 320 96" preserveAspectRatio="none"></svg>
+        <div class="foot"><span id="revMomMin"></span><span id="revMomMax"></span></div>
+        <div class="foot" id="revMomNotice" style="display:none; margin-top:4px;">資料筆數不足，需每月持續累積才能看到趨勢</div>
       </div>
     </div>
 
@@ -321,6 +373,13 @@ function renderSignalBadges(signal){
     const cls = sig === '頸線突破' ? 'pill accent' : 'pill';
     return `<span class="${cls}">${sig}</span>`;
   }).join('');
+}
+
+function renderSmartMoneyBadge(sm){
+  if (!sm || sm.score == null) return '<span class="pill mono">—</span>';
+  const cls = sm.score >= 70 ? 'pill accent' : (sm.score >= 50 ? 'pill' : 'pill warn');
+  const cov = sm.coverage_pct != null ? ` <span class="sm-cov">(涵蓋${fmtNum(sm.coverage_pct,0)}%)</span>` : '';
+  return `<span class="${cls} mono">${fmtNum(sm.score,0)}</span>${cov}`;
 }
 
 let mainChart = null, candleSeries = null, volumeSeries = null, ma5Series = null, ma20Series = null, ma60Series = null, necklinePriceLine = null;
@@ -364,6 +423,7 @@ function renderTable(){
       <td><span class="pill mono">${fmtNum(s.snapshot.close,0)} &gt; ${fmtNum(s.snapshot.ma5,0)} &gt; ${fmtNum(s.snapshot.ma20,0)} &gt; ${fmtNum(s.snapshot.ma60,0)}</span></td>
       <td class="mono" style="color:var(--up); font-weight:600;">${fmtLots(s.snapshot.total_net)}</td>
       <td class="mono">${s.shareholding && s.shareholding.retail_shares_pct != null ? fmtNum(s.shareholding.retail_shares_pct,2)+'%' : '—'}</td>
+      <td>${renderSmartMoneyBadge(s.smart_money)}</td>
     `;
     tr.addEventListener('click', () => selectStock(s.code));
     tbody.appendChild(tr);
@@ -588,6 +648,78 @@ function renderShareholdingCharts(stock){
   }
 }
 
+function renderRevenueTrendChart(svgId, months, values, minId, maxId, noticeId){
+  const notice = document.getElementById(noticeId);
+  const svg = document.getElementById(svgId);
+  const points = months.map((m,i) => [m, values[i]]).filter(p => p[1] !== null && p[1] !== undefined);
+  if (points.length < 2){
+    svg.innerHTML = '';
+    notice.style.display = '';
+    document.getElementById(minId).textContent = '';
+    document.getElementById(maxId).textContent = '';
+    return;
+  }
+  notice.style.display = 'none';
+  const dates = points.map(p => p[0]);
+  const vals = points.map(p => p[1]);
+  const range = lineChart(svgId, dates, vals, {color: cssVar('--accent'), digits: 1});
+  document.getElementById(minId).textContent = range.min !== null ? fmtNum(range.min,1)+'%' : '';
+  document.getElementById(maxId).textContent = range.max !== null ? fmtNum(range.max,1)+'%' : '';
+}
+
+const SM_FACTOR_LABELS = {
+  institutional_intensity: '法人買超強度',
+  institutional_streak: '法人連續買超',
+  trust_momentum: '投信買超動能',
+  margin_divergence: '融資背離(價漲資不增)',
+  margin_deleveraging_streak: '融資連續去化',
+  big_holder_accumulation: '大戶籌碼增碼',
+  retail_exit: '散戶退場訊號',
+  volume_pullback_pattern: '量縮拉回不破均線',
+};
+
+function renderSmartMoney(stock){
+  const sm = stock.smart_money;
+  const scoreEl = document.getElementById('smScoreBig');
+  const covEl = document.getElementById('smCoverage');
+  const listEl = document.getElementById('smFactorList');
+
+  if (!sm || sm.score == null){
+    scoreEl.textContent = '—';
+    scoreEl.className = 'sm-score-big mono';
+    covEl.textContent = '尚無足夠資料';
+    listEl.innerHTML = '<div class="sm-note">目前所有因子都還沒有可用資料（例如這檔股票是第一次入選，還沒有前幾天/前一週的本地累積歷史可比較），跑幾天排程後再回來看。</div>';
+    return;
+  }
+
+  scoreEl.textContent = fmtNum(sm.score, 0);
+  scoreEl.className = 'sm-score-big mono ' + (sm.score >= 70 ? 'up' : (sm.score < 50 ? 'warn' : ''));
+  covEl.textContent = `因子涵蓋率 ${fmtNum(sm.coverage_pct, 0)}%`;
+
+  listEl.innerHTML = Object.entries(SM_FACTOR_LABELS).map(([key, label]) => {
+    const v = sm.components ? sm.components[key] : null;
+    const na = v == null;
+    const pct = na ? 0 : Math.max(0, Math.min(100, v));
+    return `
+      <div class="sm-factor-row ${na ? 'na' : ''}">
+        <span class="label">${label}</span>
+        <span class="sm-factor-bar"><span class="fill" style="width:${pct}%"></span></span>
+        <span class="val mono">${na ? '—' : fmtNum(v, 0)}</span>
+      </div>`;
+  }).join('');
+}
+
+function renderProfile(stock){
+  document.getElementById('productInfo').textContent = stock.product_info || '（尚未收錄主要產品說明）';
+  const link = document.getElementById('investorLink');
+  link.href = stock.investor_conference_url || '#';
+
+  const trend = stock.revenue_trend || [];
+  const months = trend.map(t => t.month);
+  renderRevenueTrendChart('revenueYoyChart', months, trend.map(t => t.yoy_pct), 'revYoyMin', 'revYoyMax', 'revYoyNotice');
+  renderRevenueTrendChart('revenueMomChart', months, trend.map(t => t.mom_pct), 'revMomMin', 'revMomMax', 'revMomNotice');
+}
+
 function renderMetrics(stock){
   const s = stock.snapshot;
   const sh = stock.shareholding;
@@ -644,7 +776,9 @@ function selectStock(code){
 
   renderMainChart(stock);
   renderMiniCharts(stock);
+  renderSmartMoney(stock);
   renderShareholdingCharts(stock);
+  renderProfile(stock);
   renderMetrics(stock);
 }
 

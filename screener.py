@@ -16,6 +16,14 @@
       - 今日成交量 > 20日均量 * VOLUME_SURGE_RATIO（量能確認）
     兩訊號皆符合的股票會同時標註在 signal 欄位。
 
+  第三階段（Smart Money 疑似建倉分數，見 smart_money.py）：
+    不改變上面兩階段決定的入選名單，只對已經選出的候選股額外算一個
+    0-100 分的排序依據，並把結果排在 CSV 最前面。分數綜合三大法人
+    買超強度/連續性、投信動能、融資背離與連續去化、集保大戶增碼、
+    散戶退場、量縮拉回不破均線等 8 個因子；因子涉及的多日趨勢（融資、
+    集保）需要跑過一段時間累積本地歷史檔才會愈算愈準，詳見
+    smart_money.py 開頭的說明。
+
 用法：
     python screener.py
 
@@ -25,12 +33,14 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from time import monotonic
 
 import pandas as pd
 
 from data_sources import (
     find_latest_trading_date,
     get_all_daily_price,
+    get_institutional_history,
     get_institutional_net,
     get_margin_balance,
     get_shareholding_distribution,
@@ -40,6 +50,12 @@ from data_sources import (
 from indicators import detect_neckline_breakout
 from indicators import macd as macd_indicator
 from indicators import moving_average, rsi
+from margin_store import load_trend as load_margin_trend
+from margin_store import record_snapshot as record_margin_snapshot
+import smart_money
+import smart_money_log
+from shareholding_store import load_trend as load_shareholding_trend
+from shareholding_store import record_snapshot as record_shareholding_snapshot
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 
@@ -53,6 +69,11 @@ RSI_LOW, RSI_HIGH = 45, 75
 CONSOLIDATION_WINDOW = 20          # 盤整區間天數（不含今天）
 MAX_CONSOLIDATION_RANGE_PCT = 15   # 盤整區間允許的最大收盤價波動幅度(%)
 VOLUME_SURGE_RATIO = 1.5           # 今日成交量門檻 = 20日均量 * 此倍數
+
+# 全域時間預算：stage2 抓歷史日線最多花這麼多秒，超過就對剩下的股票停止
+# 額外的「缺月份重試」（只抓一輪，抓多少算多少），避免遇到大範圍限流/官方
+# 主機封鎖時，60 檔候選股疊加重試時間拖成好幾小時。
+HISTORY_FETCH_TIME_BUDGET_SECONDS = 900  # 15 分鐘
 
 
 def stage1_chip_filter(trade_date) -> pd.DataFrame:
@@ -78,17 +99,33 @@ STAGE2_COLUMNS = [
     "code", "name", "close", "ma5", "ma20", "ma60", "rsi14", "macd_hist",
     "signal", "neckline", "breakout_vol_ratio",
     "foreign_net", "trust_net", "dealer_net", "total_net",
+    "volume", "change", "margin_balance", "margin_balance_prev",
+    "smart_money_f1", "smart_money_f8",
 ]
-PICKS_COLUMNS = STAGE2_COLUMNS + ["retail_holders_pct", "retail_shares_pct", "big_holder_shares_pct"]
+PICKS_COLUMNS = STAGE2_COLUMNS + [
+    "retail_holders_pct", "retail_shares_pct", "big_holder_shares_pct",
+    "smart_money_score", "smart_money_coverage_pct",
+    "sm_institutional_intensity", "sm_institutional_streak", "sm_trust_momentum",
+    "sm_margin_divergence", "sm_margin_deleveraging_streak", "sm_big_holder_accumulation",
+    "sm_retail_exit", "sm_volume_pullback_pattern",
+]
 
 
 def stage2_technical_filter(candidates: pd.DataFrame) -> pd.DataFrame:
     rows = []
     total = len(candidates)
+    start = monotonic()
+    budget_exceeded_announced = False
     for i, row in candidates.iterrows():
         code, name = row["code"], row["name"]
         print(f"[2/4] ({i + 1}/{total}) 抓取 {code} {name} 歷史日線並計算技術指標...")
-        hist = get_stock_history(code, months=4)
+
+        over_budget = (monotonic() - start) > HISTORY_FETCH_TIME_BUDGET_SECONDS
+        if over_budget and not budget_exceeded_announced:
+            print(f"  時間預算（{HISTORY_FETCH_TIME_BUDGET_SECONDS}秒）已用完，"
+                  f"剩下的股票改用快速模式（不做缺月份重試），避免大範圍限流時拖太久")
+            budget_exceeded_announced = True
+        hist = get_stock_history(code, months=4, coverage_passes=1 if over_budget else 2)
         time.sleep(0.5)  # 換下一檔股票前稍微停頓，避免被官方主機限流
         if len(hist) < 60:
             continue  # 資料不足以算 MA60，跳過
@@ -130,6 +167,13 @@ def stage2_technical_filter(candidates: pd.DataFrame) -> pd.DataFrame:
             "breakout_vol_ratio": breakout.get("vol_ratio"),
             "foreign_net": row["foreign_net"], "trust_net": row["trust_net"],
             "dealer_net": row["dealer_net"], "total_net": row["total_net"],
+            "volume": row["volume"], "change": row.get("change"),
+            "margin_balance": row.get("margin_balance"), "margin_balance_prev": row.get("margin_balance_prev"),
+            # Smart Money 因子中，這兩個用得到的原始資料（今日法人買超/成交量、
+            # 本檔股票的歷史日線）這裡剛好都還在手上，先算好子分數存起來，
+            # 避免之後（main() 裡）為了算分又重抓一次歷史日線浪費 API 呼叫。
+            "smart_money_f1": smart_money.score_institutional_intensity(row["total_net"], row["volume"]),
+            "smart_money_f8": smart_money.score_volume_pullback_pattern(hist),
         })
     return pd.DataFrame(rows, columns=STAGE2_COLUMNS)
 
@@ -141,11 +185,21 @@ def main():
     candidates = stage1_chip_filter(trade_date)
     print(f"\n[1/4] 籌碼面初篩留下 {len(candidates)} 檔，進入技術面複核...\n")
 
+    # 把這次 60 檔候選股的融資餘額存進本地歷史檔（資料本來就已經抓了，
+    # 存檔不花額外的 API 呼叫），讓「融資連續去化天數」這個 Smart Money
+    # 因子隨著執行天數累積，愈跑愈準。
+    n_margin = record_margin_snapshot(candidates, trade_date)
+    if n_margin:
+        print(f"已將本日融資餘額快照存入 data/margin_history.csv（{n_margin} 檔證券）")
+
     picks = stage2_technical_filter(candidates)
 
     if not picks.empty:
         print("\n[3/4] 抓取集保戶股權分散表，計算散戶佔比...")
         dist = get_shareholding_distribution()
+        n_recorded = record_shareholding_snapshot(dist)
+        if n_recorded:
+            print(f"已將本週股權分散快照存入 data/shareholding_history.csv（{n_recorded} 檔證券）")
         shareholding_rows = []
         for code in picks["code"]:
             summary = shareholding_summary(dist, code)
@@ -156,6 +210,42 @@ def main():
                 "big_holder_shares_pct": summary["big_holder_shares_pct"] if summary else None,
             })
         picks = picks.merge(pd.DataFrame(shareholding_rows), on="code", how="left")
+
+        print("\n[Smart Money] 計算疑似建倉分數（僅用於排序，不影響上面的入選結果）...")
+        chip_hist_map = get_institutional_history(picks["code"].tolist(), calendar_days=20)
+        score_rows = []
+        for _, r in picks.iterrows():
+            code = r["code"]
+            chip_hist = chip_hist_map.get(code, [])
+            margin_trend = load_margin_trend(code)
+            sh_trend = load_shareholding_trend(code)
+
+            price_change_pct = None
+            change, close = r.get("change"), r.get("close")
+            if change is not None and close not in (None, 0) and not pd.isna(change):
+                prev_close = close - change
+                if prev_close:
+                    price_change_pct = change / prev_close
+
+            components = {
+                "institutional_intensity": r.get("smart_money_f1"),
+                "institutional_streak": smart_money.score_institutional_streak(chip_hist),
+                "trust_momentum": smart_money.score_trust_momentum(chip_hist),
+                "margin_divergence": smart_money.score_margin_divergence(
+                    r.get("margin_balance"), r.get("margin_balance_prev"), price_change_pct),
+                "margin_deleveraging_streak": smart_money.score_margin_deleveraging_streak(margin_trend),
+                "big_holder_accumulation": smart_money.score_big_holder_accumulation(sh_trend),
+                "retail_exit": smart_money.score_retail_exit(sh_trend),
+                "volume_pullback_pattern": r.get("smart_money_f8"),
+            }
+            result = smart_money.aggregate(components)
+            score_rows.append({
+                "code": code,
+                "smart_money_score": result["score"],
+                "smart_money_coverage_pct": result["coverage_pct"],
+                **{f"sm_{k}": v for k, v in result["components"].items()},
+            })
+        picks = picks.merge(pd.DataFrame(score_rows), on="code", how="left")
     else:
         picks = picks.reindex(columns=PICKS_COLUMNS)
 
@@ -163,7 +253,12 @@ def main():
     out_path = OUTPUT_DIR / f"picks_{trade_date.strftime('%Y%m%d')}.csv"
 
     if not picks.empty:
-        picks = picks.sort_values("total_net", ascending=False)
+        # 依 Smart Money 疑似建倉分數排序（缺資料算不出分數的排最後），
+        # 三大法人合計買超當作同分時的排序依據。這裡只是排序，前面兩階段
+        # 已經決定的入選名單不會因此改變。
+        picks = picks.sort_values(
+            ["smart_money_score", "total_net"], ascending=[False, False], na_position="last")
+        smart_money_log.record_daily(trade_date, picks)
 
     # 不論今天有沒有選到股票都要寫檔，避免自動排程時 build_dashboard.py
     # 因為抓不到「今天」的檔案，誤用前一天的舊結果、卻讓人以為是當天資料。

@@ -104,6 +104,29 @@ def get_margin_balance() -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+def get_monthly_revenue_snapshot() -> pd.DataFrame:
+    """全上市公司最新一個月的營收（含官方算好的月增率/年增率）。
+
+    這是「最新一個月」的單次快照，沒有查歷史月份的參數；近幾季的走勢
+    要靠 revenue_store.py 每次執行時把這個月的快照存下來慢慢累積。
+    """
+    data = _get_json_with_retry(f"{TWSE_OPENAPI}/opendata/t187ap05_L", params={})
+    cols = ["code", "year_month", "revenue", "revenue_mom_pct", "revenue_yoy_pct"]
+    if not data:
+        return pd.DataFrame(columns=cols)
+
+    df = pd.DataFrame(data)
+    df = df[df["公司代號"].str.match(_ORDINARY_STOCK_CODE)]
+    out = pd.DataFrame({
+        "code": df["公司代號"],
+        "year_month": df["資料年月"],
+        "revenue": df["營業收入-當月營收"].map(_to_number),
+        "revenue_mom_pct": df["營業收入-上月比較增減(%)"].map(_to_number),
+        "revenue_yoy_pct": df["營業收入-去年同月增減(%)"].map(_to_number),
+    })
+    return out.reset_index(drop=True)
+
+
 def find_latest_trading_date(max_lookback: int = 7) -> date:
     """從今天往回找，回傳最近一個有三大法人資料（代表有開盤）的日期。"""
     d = date.today()
@@ -215,25 +238,56 @@ def shareholding_summary(dist: pd.DataFrame, code: str) -> dict | None:
     }
 
 
-def get_stock_history(stock_no: str, months: int = 4) -> pd.DataFrame:
-    """單一股票近 N 個月的日線資料（技術指標計算用）。"""
-    frames = []
+def get_stock_history(stock_no: str, months: int = 4, coverage_passes: int = 2) -> pd.DataFrame:
+    """單一股票近 N 個月的日線資料（技術指標計算用）。
+
+    為了降低資料中間出現「缺月份」破洞的機率（會讓 MA60 等指標算錯、
+    也會讓同一天重跑好幾次結果不一致），如果第一輪抓完還有月份沒拿到，
+    會再等一小段時間、針對「還缺的月份」單獨重試一次（coverage_passes=2）。
+
+    這裡刻意不做太多輪、每輪等待也不長：如果真的遇到大範圍限流或官方
+    主機封鎖（例如 WAF 擋下所有請求），重試太多輪會讓單一檔股票卡上
+    好幾分鐘，60 檔候選股疊加起來可能拖成好幾小時。真正需要「同一天
+    重跑結果要一致」這種可靠度時，交給呼叫端（screener.py 的
+    stage2_technical_filter）用全域時間預算來控制，而不是在這裡無限重試。
+    """
+    month_cursors = []
     cursor = date.today().replace(day=1)
     for _ in range(months):
-        date_str = cursor.strftime("%Y%m%d")
-        payload = _get_json_with_retry(
-            f"{TWSE_RWD}/afterTrading/STOCK_DAY",
-            params={"date": date_str, "stockNo": stock_no, "response": "json"},
-        )
-        if payload and payload.get("stat") == "OK" and payload.get("data"):
-            frames.append(pd.DataFrame(payload["data"], columns=payload["fields"]))
+        month_cursors.append(cursor)
         cursor = (cursor - timedelta(days=1)).replace(day=1)
-        time.sleep(0.6)  # 對官方主機客氣一點，避免觸發限流
 
-    if not frames:
+    frames_by_month: dict[date, pd.DataFrame] = {}
+    pending = list(month_cursors)
+
+    for pass_num in range(coverage_passes):
+        if not pending:
+            break
+        if pass_num > 0:
+            print(f"    {stock_no} 還有 {len(pending)} 個月份沒抓到，等待後重試（第 {pass_num + 1} 輪）...")
+            time.sleep(8)
+
+        still_pending = []
+        for m in pending:
+            date_str = m.strftime("%Y%m%d")
+            payload = _get_json_with_retry(
+                f"{TWSE_RWD}/afterTrading/STOCK_DAY",
+                params={"date": date_str, "stockNo": stock_no, "response": "json"},
+            )
+            if payload and payload.get("stat") == "OK" and payload.get("data"):
+                frames_by_month[m] = pd.DataFrame(payload["data"], columns=payload["fields"])
+            else:
+                still_pending.append(m)
+            time.sleep(0.6)  # 對官方主機客氣一點，避免觸發限流
+        pending = still_pending
+
+    if pending:
+        print(f"    警告：{stock_no} 有 {len(pending)} 個月份的資料最終仍抓不到，這次歷史資料會有缺口")
+
+    if not frames_by_month:
         return pd.DataFrame()
 
-    hist = pd.concat(frames, ignore_index=True)
+    hist = pd.concat(frames_by_month.values(), ignore_index=True)
     hist = hist.rename(columns={
         "日期": "date", "成交股數": "volume", "成交金額": "amount",
         "開盤價": "open", "最高價": "high", "最低價": "low",
