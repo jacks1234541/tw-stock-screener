@@ -240,6 +240,7 @@
           <th>近 20 日走勢</th>
           <th>RSI14</th>
           <th>均線排列</th>
+          <th>量能倍數(今日/20日均量)</th>
           <th>三大法人合計買超</th>
           <th>散戶持股比例</th>
           <th>疑似建倉分數</th>
@@ -421,6 +422,7 @@ function renderTable(){
       </td>
       <td><span class="pill mono ${rsiWarn ? 'warn' : ''}">${fmtNum(s.snapshot.rsi14,1)}</span></td>
       <td><span class="pill mono">${fmtNum(s.snapshot.close,0)} &gt; ${fmtNum(s.snapshot.ma5,0)} &gt; ${fmtNum(s.snapshot.ma20,0)} &gt; ${fmtNum(s.snapshot.ma60,0)}</span></td>
+      <td class="mono">${s.snapshot.breakout_vol_ratio != null ? fmtNum(s.snapshot.breakout_vol_ratio,2)+'x' : '—'}</td>
       <td class="mono" style="color:var(--up); font-weight:600;">${fmtLots(s.snapshot.total_net)}</td>
       <td class="mono">${s.shareholding && s.shareholding.retail_shares_pct != null ? fmtNum(s.shareholding.retail_shares_pct,2)+'%' : '—'}</td>
       <td>${renderSmartMoneyBadge(s.smart_money)}</td>
@@ -480,7 +482,7 @@ function ensureMainChart(){
     const c = param.seriesData.get(candleSeries);
     const v = param.seriesData.get(volumeSeries);
     if (!c) return;
-    legend.innerHTML = `<span class="mono">${param.time} · 開 ${fmtNum(c.open,2)} 高 ${fmtNum(c.high,2)} 低 ${fmtNum(c.low,2)} 收 ${fmtNum(c.close,2)} · 量 ${v ? Math.round(v.value/1000).toLocaleString('zh-TW') : '—'} 張</span>`;
+    legend.innerHTML = `<span class="mono">${param.time} · 開 ${fmtNum(c.open,2)} 高 ${fmtNum(c.high,2)} 低 ${fmtNum(c.low,2)} 收 ${fmtNum(c.close,2)} · 量 ${v ? Math.round(v.value).toLocaleString('zh-TW') : '—'} 張</span>`;
   });
 }
 
@@ -497,7 +499,7 @@ function renderMainChart(stock){
   const dates = stock.candles.map(c => c.date);
   candleSeries.setData(stock.candles.map(c => ({time:c.date, open:c.open, high:c.high, low:c.low, close:c.close})));
   volumeSeries.setData(stock.candles.map(c => ({
-    time:c.date, value:c.volume,
+    time:c.date, value: c.volume != null ? c.volume / 1000 : 0,  // 股數換算成張數（1張=1000股），讓 Y 軸數字以張為單位
     color: c.close >= c.open ? cssVar('--up') : cssVar('--down'),
   })));
   ma5Series.setData(toSeriesPoints(dates, stock.series.ma5));
