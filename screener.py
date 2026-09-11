@@ -111,9 +111,14 @@ PICKS_COLUMNS = STAGE2_COLUMNS + [
     "sm_institutional_intensity", "sm_institutional_streak", "sm_trust_momentum",
     "sm_margin_divergence", "sm_margin_decline_streak", "sm_big_holder_accumulation",
     "sm_retail_exit", "sm_volume_pullback_pattern",
-    # margin_decline_streak 的可信度/觀察細節，供除錯與之後前向驗證用，
-    # 不是加權平均會用到的核心欄位（見 smart_money.score_margin_decline_streak 說明）。
+    # 以下都是各因子的可信度/中間值，供除錯與之後前向驗證用，不是加權
+    # 平均會用到的核心欄位（見 smart_money.py 各因子函式的說明）。
     "sm_margin_decline_confidence", "sm_margin_decline_observation_days",
+    "sm_big_holder_confidence", "sm_big_holder_delta_1w", "sm_big_holder_delta_4w",
+    "sm_big_holder_zscore", "sm_big_holder_history_weeks",
+    "sm_retail_confidence", "sm_retail_delta_1w", "sm_retail_delta_4w",
+    "sm_retail_zscore", "sm_retail_history_weeks",
+    "sm_concentration_confirmed", "sm_concentration_strength",
 ]
 
 
@@ -245,6 +250,10 @@ def main():
                     price_change_pct = change / prev_close
 
             margin_decline = smart_money.score_margin_decline_streak(margin_trend, trading_calendar)
+            big_holder = smart_money.score_big_holder_accumulation(sh_trend)
+            retail_exit = smart_money.score_retail_exit(sh_trend)
+            concentration = smart_money.compute_concentration_confirmation(
+                big_holder["delta_1w"], retail_exit["delta_1w"])
 
             components = {
                 "institutional_intensity": r.get("smart_money_f1"),
@@ -253,11 +262,15 @@ def main():
                 "margin_divergence": smart_money.score_margin_divergence(
                     r.get("margin_balance"), r.get("margin_balance_prev"), price_change_pct),
                 "margin_decline_streak": margin_decline["score"],
-                "big_holder_accumulation": smart_money.score_big_holder_accumulation(sh_trend),
-                "retail_exit": smart_money.score_retail_exit(sh_trend),
+                "big_holder_accumulation": big_holder["score"],
+                "retail_exit": retail_exit["score"],
                 "volume_pullback_pattern": r.get("smart_money_f8"),
             }
-            confidences = {"margin_decline_streak": margin_decline["confidence"]}
+            confidences = {
+                "margin_decline_streak": margin_decline["confidence"],
+                "big_holder_accumulation": big_holder["confidence"],
+                "retail_exit": retail_exit["confidence"],
+            }
             result = smart_money.aggregate(components, confidences)
             score_rows.append({
                 "code": code,
@@ -266,6 +279,18 @@ def main():
                 **{f"sm_{k}": v for k, v in result["components"].items()},
                 "sm_margin_decline_confidence": margin_decline["confidence"],
                 "sm_margin_decline_observation_days": margin_decline["trading_day_span"],
+                "sm_big_holder_confidence": big_holder["confidence"],
+                "sm_big_holder_delta_1w": big_holder["delta_1w"],
+                "sm_big_holder_delta_4w": big_holder["delta_4w"],
+                "sm_big_holder_zscore": big_holder["zscore"],
+                "sm_big_holder_history_weeks": big_holder["history_weeks"],
+                "sm_retail_confidence": retail_exit["confidence"],
+                "sm_retail_delta_1w": retail_exit["delta_1w"],
+                "sm_retail_delta_4w": retail_exit["delta_4w"],
+                "sm_retail_zscore": retail_exit["zscore"],
+                "sm_retail_history_weeks": retail_exit["history_weeks"],
+                "sm_concentration_confirmed": concentration["confirmed"],
+                "sm_concentration_strength": concentration["strength"],
             })
         picks = picks.merge(pd.DataFrame(score_rows), on="code", how="left")
     else:

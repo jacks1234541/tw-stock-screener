@@ -20,6 +20,11 @@ COLUMNS = [
     "sm_margin_divergence", "sm_margin_decline_streak", "sm_big_holder_accumulation",
     "sm_retail_exit", "sm_volume_pullback_pattern",
     "sm_margin_decline_confidence", "sm_margin_decline_observation_days",
+    "sm_big_holder_confidence", "sm_big_holder_delta_1w", "sm_big_holder_delta_4w",
+    "sm_big_holder_zscore", "sm_big_holder_history_weeks",
+    "sm_retail_confidence", "sm_retail_delta_1w", "sm_retail_delta_4w",
+    "sm_retail_zscore", "sm_retail_history_weeks",
+    "sm_concentration_confirmed", "sm_concentration_strength",
 ]
 
 

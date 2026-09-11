@@ -129,11 +129,23 @@ def build_stock_payload(row: pd.Series, coverage_passes: int = 2) -> dict:
                 "retail_exit": _num(row.get("sm_retail_exit")),
                 "volume_pullback_pattern": _num(row.get("sm_volume_pullback_pattern")),
             },
-            # margin_decline_streak 的可信度：觀察點隔太久（交易日密度低）時，
-            # 這個因子雖然仍顯示原始分數，但對總分的實際影響力會被自動調低
-            # （見 smart_money.aggregate 的 confidences 參數）。
+            # 以下都是各因子的可信度/中間值：分數本身不會因為可信度低就被
+            # 打折，但對總分的實際影響力會被自動調低（見 smart_money.py
+            # 各因子函式與 aggregate() 的 confidences 參數說明）。
             "margin_decline_confidence": _num(row.get("sm_margin_decline_confidence")),
             "margin_decline_observation_days": _num(row.get("sm_margin_decline_observation_days")),
+            "big_holder_confidence": _num(row.get("sm_big_holder_confidence")),
+            "big_holder_delta_1w": _num(row.get("sm_big_holder_delta_1w")),
+            "big_holder_delta_4w": _num(row.get("sm_big_holder_delta_4w")),
+            "big_holder_zscore": _num(row.get("sm_big_holder_zscore")),
+            "big_holder_history_weeks": _num(row.get("sm_big_holder_history_weeks")),
+            "retail_confidence": _num(row.get("sm_retail_confidence")),
+            "retail_delta_1w": _num(row.get("sm_retail_delta_1w")),
+            "retail_delta_4w": _num(row.get("sm_retail_delta_4w")),
+            "retail_zscore": _num(row.get("sm_retail_zscore")),
+            "retail_history_weeks": _num(row.get("sm_retail_history_weeks")),
+            "concentration_confirmed": bool(row.get("sm_concentration_confirmed")) if pd.notna(row.get("sm_concentration_confirmed")) else False,
+            "concentration_strength": _num(row.get("sm_concentration_strength")),
         },
     }
 

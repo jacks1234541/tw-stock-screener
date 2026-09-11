@@ -707,16 +707,25 @@ function renderSmartMoney(stock){
   scoreEl.className = 'sm-score-big mono ' + (sm.score >= 70 ? 'up' : (sm.score < 50 ? 'warn' : ''));
   covEl.textContent = `因子涵蓋率 ${fmtNum(sm.coverage_pct, 0)}%`;
 
+  // 這幾個因子的分數是好幾個子成分（例如 1週/4週變化、Z-score）依資料
+  // 完整度加權組合出來的，分數本身不會因為資料不齊全就打折，而是額外
+  // 用可信度反映「這個分數對總分的實際影響力有沒有被自動調低」（見
+  // smart_money.py 各因子函式與 aggregate() 的 confidences 參數說明）。
+  const CONF_NOTE_FIELDS = {
+    margin_decline_streak: {conf: 'margin_decline_confidence', extra: 'margin_decline_observation_days', extraLabel: n => `，跨${Math.round(n)}個交易日`},
+    big_holder_accumulation: {conf: 'big_holder_confidence', extra: 'big_holder_history_weeks', extraLabel: n => `，${Math.round(n)}週歷史`},
+    retail_exit: {conf: 'retail_confidence', extra: 'retail_history_weeks', extraLabel: n => `，${Math.round(n)}週歷史`},
+  };
+
   listEl.innerHTML = Object.entries(SM_FACTOR_LABELS).map(([key, label]) => {
     const v = sm.components ? sm.components[key] : null;
     const na = v == null;
     const pct = na ? 0 : Math.max(0, Math.min(100, v));
-    // 融資連續下降次數的觀察點常常隔了很多天才出現一次（這檔股票不是每天
-    // 都在候選名單裡），分數本身不打折，但額外標示可信度，讓人知道這個
-    // 分數對總分的實際影響力有沒有被自動調低（見 aggregate 的 confidences）。
     let confNote = '';
-    if (key === 'margin_decline_streak' && !na && sm.margin_decline_confidence != null){
-      confNote = ` <span class="sm-cov">(可信度${fmtNum(sm.margin_decline_confidence * 100, 0)}%${sm.margin_decline_observation_days != null ? '，跨' + Math.round(sm.margin_decline_observation_days) + '個交易日' : ''})</span>`;
+    const cf = CONF_NOTE_FIELDS[key];
+    if (cf && !na && sm[cf.conf] != null){
+      const extraVal = sm[cf.extra];
+      confNote = ` <span class="sm-cov">(可信度${fmtNum(sm[cf.conf] * 100, 0)}%${extraVal != null ? cf.extraLabel(extraVal) : ''})</span>`;
     }
     return `
       <div class="sm-factor-row ${na ? 'na' : ''}">

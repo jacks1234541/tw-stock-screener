@@ -100,7 +100,22 @@ def main() -> int:
         }
         # CSV 讀回來的缺資料是 NaN，aggregate() 要看到 None 才會正確判斷「這個因子沒資料」。
         components = {k: (None if isinstance(v, float) and pd.isna(v) else v) for k, v in components.items()}
-        confidences = {"margin_decline_streak": margin_decline["confidence"]}
+
+        # big_holder_accumulation / retail_exit 這裡不重算（跟融資無關，19:00
+        # 那次已經算好），但兩者的分數是「1週/4週/Z-score 三個子成分加權」
+        # 出來的，本來就帶有自己的 confidence（資料越齊全 confidence 越高，
+        # 見 smart_money.score_big_holder_accumulation 的說明）——把 19:00
+        # 算好、存在 CSV 裡的 confidence 原封不動讀回來繼續用，不能預設成
+        # 1.0，否則這裡重算出來的總分會跟 19:00 當時的邏輯不一致。
+        def _read_confidence(col):
+            v = picks.loc[code, col] if col in picks.columns else None
+            return 1.0 if pd.isna(v) else float(v)
+
+        confidences = {
+            "margin_decline_streak": margin_decline["confidence"],
+            "big_holder_accumulation": _read_confidence("sm_big_holder_confidence"),
+            "retail_exit": _read_confidence("sm_retail_confidence"),
+        }
 
         result = smart_money.aggregate(components, confidences)
         picks.loc[code, "margin_balance"] = margin_balance
