@@ -285,13 +285,9 @@ def get_stock_history(stock_no: str, months: int = 4, coverage_passes: int = 2) 
 
         still_pending = []
         for m in pending:
-            date_str = m.strftime("%Y%m%d")
-            payload = _get_json_with_retry(
-                f"{TWSE_RWD}/afterTrading/STOCK_DAY",
-                params={"date": date_str, "stockNo": stock_no, "response": "json"},
-            )
-            if payload and payload.get("stat") == "OK" and payload.get("data"):
-                frames_by_month[m] = pd.DataFrame(payload["data"], columns=payload["fields"])
+            df = fetch_stock_month(stock_no, m)
+            if df is not None:
+                frames_by_month[m] = df
             else:
                 still_pending.append(m)
             time.sleep(0.6)  # 對官方主機客氣一點，避免觸發限流
@@ -302,15 +298,33 @@ def get_stock_history(stock_no: str, months: int = 4, coverage_passes: int = 2) 
 
     if frames_by_month:
         fetched = pd.concat(frames_by_month.values(), ignore_index=True)
-        fetched = fetched.rename(columns={
-            "日期": "date", "成交股數": "volume", "成交金額": "amount",
-            "開盤價": "open", "最高價": "high", "最低價": "low",
-            "收盤價": "close", "漲跌價差": "change", "成交筆數": "transactions",
-        })
-        fetched["date"] = fetched["date"].map(_roc_to_date)
-        for col in ["volume", "amount", "open", "high", "low", "close", "transactions"]:
-            fetched[col] = fetched[col].map(_to_number)
-        fetched = fetched.dropna(subset=["close"])
         price_store.upsert_daily_rows(stock_no, fetched)
 
     return price_store.load_history(stock_no, months=months)
+
+
+def fetch_stock_month(stock_no: str, month: date) -> pd.DataFrame | None:
+    """抓單一股票、單一月份的日線資料（不經過本地快取，直接打 API），失敗回傳 None。
+
+    是 get_stock_history() 內部重試迴圈用的最小單位，也給 repair_price_gaps.py
+    補洞時重複使用，避免同一段「呼叫 API、改欄位名稱、轉數字型別」的邏輯
+    兩邊各寫一份、之後改一邊忘了改另一邊。
+    """
+    date_str = month.strftime("%Y%m%d")
+    payload = _get_json_with_retry(
+        f"{TWSE_RWD}/afterTrading/STOCK_DAY",
+        params={"date": date_str, "stockNo": stock_no, "response": "json"},
+    )
+    if not payload or payload.get("stat") != "OK" or not payload.get("data"):
+        return None
+
+    df = pd.DataFrame(payload["data"], columns=payload["fields"])
+    df = df.rename(columns={
+        "日期": "date", "成交股數": "volume", "成交金額": "amount",
+        "開盤價": "open", "最高價": "high", "最低價": "low",
+        "收盤價": "close", "漲跌價差": "change", "成交筆數": "transactions",
+    })
+    df["date"] = df["date"].map(_roc_to_date)
+    for col in ["volume", "amount", "open", "high", "low", "close", "transactions"]:
+        df[col] = df[col].map(_to_number)
+    return df.dropna(subset=["close"])

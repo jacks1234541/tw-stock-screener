@@ -71,6 +71,24 @@ def store_date(d: date, df: pd.DataFrame) -> int:
     return len(rows)
 
 
+def get_reference_day_counts() -> dict[str, int]:
+    """回傳每個「年-月」本地看到過幾個不同的交易日。
+
+    三大法人資料是全市場單一批次公布，不會有「部分股票缺、部分不缺」的
+    問題（要嘛整批抓到、要嘛整批沒抓到），所以拿它當作「這個月實際應該
+    有幾個交易日」的可靠對照基準，給股價快取的補洞腳本
+    （repair_price_gaps.py）用來判斷哪些「股票+月份」的股價資料不完整。
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT substr(date, 1, 7) AS ym, COUNT(DISTINCT date) FROM institutional_net GROUP BY ym"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {ym: count for ym, count in rows}
+
+
 def load_history(codes: list[str], calendar_days: int = 45) -> dict[str, list[dict]]:
     """讀出指定股票在近 calendar_days 天內、本地已經有的三大法人買賣超，按日期由舊到新排序。"""
     codes = list(dict.fromkeys(codes))
