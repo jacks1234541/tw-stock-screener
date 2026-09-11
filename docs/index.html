@@ -382,6 +382,14 @@ function renderSmartMoneyBadge(sm){
   return `<span class="${cls} mono">${fmtNum(sm.score,0)}</span>${cov}`;
 }
 
+function renderVolRatioBadge(ratio){
+  if (ratio == null) return '<span class="pill mono">—</span>';
+  // 1.5x 是 screener.py 判斷「頸線突破」量能確認的門檻，達到或超過就用
+  // 跟突破訊號同一套 accent 配色凸顯，其餘維持一般灰色 pill。
+  const cls = ratio >= 1.5 ? 'pill accent' : 'pill';
+  return `<span class="${cls} mono">${fmtNum(ratio,2)}x</span>`;
+}
+
 let mainChart = null, candleSeries = null, volumeSeries = null, ma5Series = null, ma20Series = null, ma60Series = null, necklinePriceLine = null;
 
 function buildSparkline(candles, w, h){
@@ -419,7 +427,7 @@ function renderTable(){
         </svg>
       </td>
       <td><span class="pill mono">${fmtNum(s.snapshot.close,0)} &gt; ${fmtNum(s.snapshot.ma5,0)} &gt; ${fmtNum(s.snapshot.ma20,0)} &gt; ${fmtNum(s.snapshot.ma60,0)}</span></td>
-      <td class="mono">${s.snapshot.breakout_vol_ratio != null ? fmtNum(s.snapshot.breakout_vol_ratio,2)+'x' : '—'}</td>
+      <td>${renderVolRatioBadge(s.snapshot.breakout_vol_ratio)}</td>
       <td class="mono" style="color:var(--up); font-weight:600;">${fmtLots(s.snapshot.total_net)}</td>
       <td class="mono">${s.shareholding && s.shareholding.retail_shares_pct != null ? fmtNum(s.shareholding.retail_shares_pct,2)+'%' : '—'}</td>
       <td>${renderSmartMoneyBadge(s.smart_money)}</td>
