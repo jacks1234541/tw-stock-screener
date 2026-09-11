@@ -12,6 +12,7 @@ from datetime import date, timedelta
 import pandas as pd
 import requests
 
+import institutional_store
 import price_store
 
 TWSE_OPENAPI = "https://openapi.twse.com.tw/v1"
@@ -157,29 +158,27 @@ def _get_json_with_retry(url: str, params: dict, retries: int = 3, backoff: floa
 def get_institutional_history(codes: list[str], calendar_days: int = 45) -> dict[str, list[dict]]:
     """回傳指定股票在近 calendar_days 天內、每個實際交易日的三大法人買賣超。
 
-    只呼叫一次「全市場單日」端點就能取得當天所有股票的資料，
-    所以不論要追蹤幾檔股票，API 呼叫次數都固定等於交易日數，不會隨股票數增加。
+    只呼叫一次「全市場單日」端點就能取得當天所有股票的資料，所以不論要
+    追蹤幾檔股票，理論上的 API 呼叫次數都固定等於交易日數、不會隨股票數
+    增加；但這個函式常常一次執行內就被呼叫兩次（screener.py 算 Smart
+    Money 分數一次、build_dashboard.py 畫圖表又一次），而且「查過的日期」
+    每天執行都會整批重查一遍。
+
+    本地用 institutional_store.py（SQLite）依日期累積全市場資料：某個
+    日期只要之前任何一次執行成功抓過，就永久沿用、不再重查（三大法人
+    公布後的歷史資料不會再修改，不像股價需要對「本月」特別處理）。還沒
+    抓到資料的日期（假日、或當天資料還沒公布）會一直維持「未快取」，
+    之後執行時自然會再嘗試。
     """
-    codes = set(codes)
-    result: dict[str, list[dict]] = {c: [] for c in codes}
     d = date.today()
     for _ in range(calendar_days):
-        df = get_institutional_net(d)
-        if not df.empty:
-            day_rows = df[df["code"].isin(codes)]
-            for _, row in day_rows.iterrows():
-                result[row["code"]].append({
-                    "date": d.isoformat(),
-                    "foreign_net": _to_number(row["foreign_net"]),
-                    "trust_net": _to_number(row["trust_net"]),
-                    "dealer_net": _to_number(row["dealer_net"]),
-                    "total_net": _to_number(row["total_net"]),
-                })
+        if not institutional_store.is_date_cached(d):
+            df = get_institutional_net(d)
+            if not df.empty:
+                institutional_store.store_date(d, df)
+            time.sleep(0.4)  # 只有真的打了 API 才需要對官方主機客氣一點
         d -= timedelta(days=1)
-        time.sleep(0.4)
-    for c in result:
-        result[c].sort(key=lambda r: r["date"])
-    return result
+    return institutional_store.load_history(codes, calendar_days)
 
 
 def get_shareholding_distribution() -> pd.DataFrame:
