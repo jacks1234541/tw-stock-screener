@@ -56,3 +56,41 @@ def load_trend(code: str, max_days: int = 10) -> list[dict]:
         }
         for _, r in rows.iterrows()
     ]
+
+
+def is_batch_stale(candidates: pd.DataFrame, today_date_str: str) -> bool:
+    """判斷這次剛抓到的融資融券餘額，是不是官方還沒更新今天的資料。
+
+    官方融資融券餘額通常要到晚上 21:00 左右才會產生，比 19:00 的主排程
+    晚，19:00 抓到的很可能還是舊資料。API 回應本身沒有日期欄位可以直接
+    判斷新鮮度，所以改用比對的方式：拿這次回應裡的「前日餘額」，跟我們
+    自己上一個交易日記錄的「今日餘額」比對——如果吻合，代表這批資料真的
+    往前推進了一個交易日，是新鮮的；如果大多數股票都對不起來，很可能
+    官方還沒更新，回傳的其實還是更早之前公布的舊資料。
+
+    融資融券餘額是官方一次性公布全市場的單一批次檔案，不會只有部分股票
+    更新，所以用「多數股票是否吻合」來判斷整批的新鮮度，避免單一檔股票
+    剛好巧合而誤判。樣本數太少（例如候選股都是本地第一次看到、沒有歷史
+    可以比對）時沒辦法判斷，保守當作「新鮮」處理，維持原本的行為。
+    """
+    checked, mismatched = 0, 0
+    for _, row in candidates.iterrows():
+        prev = row.get("margin_balance_prev")
+        if prev is None or pd.isna(prev):
+            continue
+        # 排除「今天」自己的紀錄：如果今天稍早已經成功記錄過一次新鮮資料
+        # （例如晚一點的補跑重複執行），要拿「前一個交易日」的紀錄來比對，
+        # 不能拿今天自己比自己。
+        trend = [t for t in load_trend(row["code"], max_days=6) if t["date"] != today_date_str]
+        if not trend:
+            continue
+        last_recorded = trend[-1]["margin_balance"]
+        if last_recorded is None:
+            continue
+        checked += 1
+        if abs(float(prev) - last_recorded) > 1e-6:
+            mismatched += 1
+
+    if checked < 3:
+        return False
+    return mismatched / checked > 0.5

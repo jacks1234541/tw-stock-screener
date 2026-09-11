@@ -50,6 +50,7 @@ from data_sources import (
 from indicators import detect_neckline_breakout
 from indicators import macd as macd_indicator
 from indicators import moving_average, rsi
+from margin_store import is_batch_stale as margin_is_batch_stale
 from margin_store import load_trend as load_margin_trend
 from margin_store import record_snapshot as record_margin_snapshot
 import smart_money
@@ -185,12 +186,21 @@ def main():
     candidates = stage1_chip_filter(trade_date)
     print(f"\n[1/4] 籌碼面初篩留下 {len(candidates)} 檔，進入技術面複核...\n")
 
-    # 把這次 60 檔候選股的融資餘額存進本地歷史檔（資料本來就已經抓了，
-    # 存檔不花額外的 API 呼叫），讓「融資連續去化天數」這個 Smart Money
-    # 因子隨著執行天數累積，愈跑愈準。
-    n_margin = record_margin_snapshot(candidates, trade_date)
-    if n_margin:
-        print(f"已將本日融資餘額快照存入 data/margin_history.csv（{n_margin} 檔證券）")
+    # 官方融資融券餘額通常晚上 21:00 左右才會產生，比 19:00 的主排程晚，
+    # 這個時間點抓到的很可能還是舊資料。偵測到還沒更新的話，這次就不記錄
+    # 也不拿來算分（讓相關的兩個 Smart Money 因子當作缺資料、權重轉給
+    # 其他因子），避免把錯位的舊資料當成今天的數字用。晚上 23:30 另外有
+    # 一個補跑（margin_catchup.py）會在資料應該已經公布後重新抓一次、
+    # 補上這兩個因子並更新報表，見該檔案開頭的說明。
+    trade_date_str = trade_date.strftime("%Y%m%d")
+    if margin_is_batch_stale(candidates, trade_date_str):
+        print("融資融券餘額看起來還沒更新（官方通常晚上21:00左右才公布，19:00執行可能太早），"
+              "本次先不記錄、相關 Smart Money 因子當天先留白，晚上 11:30 的補跑會自動補上。")
+        candidates = candidates.assign(margin_balance=None, margin_balance_prev=None)
+    else:
+        n_margin = record_margin_snapshot(candidates, trade_date)
+        if n_margin:
+            print(f"已將本日融資餘額快照存入 data/margin_history.csv（{n_margin} 檔證券）")
 
     picks = stage2_technical_filter(candidates)
 
