@@ -238,7 +238,6 @@
           <th>訊號</th>
           <th>收盤</th>
           <th>近 20 日走勢</th>
-          <th>RSI14</th>
           <th>均線排列</th>
           <th>量能倍數(今日/20日均量)</th>
           <th>三大法人合計買超</th>
@@ -405,7 +404,6 @@ function renderTable(){
     const {path, color} = buildSparkline(last20, 96, 28);
     const tr = document.createElement('tr');
     tr.dataset.code = s.code;
-    const rsiWarn = s.snapshot.rsi14 >= 70;
     tr.innerHTML = `
       <td>
         <div class="stock-name">
@@ -420,7 +418,6 @@ function renderTable(){
           <path d="${path}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
         </svg>
       </td>
-      <td><span class="pill mono ${rsiWarn ? 'warn' : ''}">${fmtNum(s.snapshot.rsi14,1)}</span></td>
       <td><span class="pill mono">${fmtNum(s.snapshot.close,0)} &gt; ${fmtNum(s.snapshot.ma5,0)} &gt; ${fmtNum(s.snapshot.ma20,0)} &gt; ${fmtNum(s.snapshot.ma60,0)}</span></td>
       <td class="mono">${s.snapshot.breakout_vol_ratio != null ? fmtNum(s.snapshot.breakout_vol_ratio,2)+'x' : '—'}</td>
       <td class="mono" style="color:var(--up); font-weight:600;">${fmtLots(s.snapshot.total_net)}</td>
@@ -465,7 +462,10 @@ function ensureMainChart(){
     wickUpColor: cssVar('--up'), wickDownColor: cssVar('--down'),
   });
   volumeSeries = mainChart.addHistogramSeries({
-    priceFormat: {type:'volume'},
+    // 資料本身已經是「張」(見 renderMainChart 的 setData)，這裡刻意不用
+    // type:'volume' 內建的 K/M 縮寫格式——縮寫後的數字看起來跟以前股數
+    // 的縮寫格式很像，容易讓人誤以為單位沒有換算成功；改用純數字＋千分位。
+    priceFormat: {type:'custom', formatter: v => Math.round(v).toLocaleString('zh-TW'), minMove: 1},
     priceScaleId: '',
   });
   volumeSeries.priceScale().applyOptions({scaleMargins: {top: 0.8, bottom: 0}});
