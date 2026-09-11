@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
@@ -47,6 +48,7 @@ from data_sources import (
     get_stock_history,
     shareholding_summary,
 )
+import institutional_store
 from indicators import detect_neckline_breakout
 from indicators import macd as macd_indicator
 from indicators import moving_average, rsi
@@ -107,8 +109,11 @@ PICKS_COLUMNS = STAGE2_COLUMNS + [
     "retail_holders_pct", "retail_shares_pct", "big_holder_shares_pct",
     "smart_money_score", "smart_money_coverage_pct",
     "sm_institutional_intensity", "sm_institutional_streak", "sm_trust_momentum",
-    "sm_margin_divergence", "sm_margin_deleveraging_streak", "sm_big_holder_accumulation",
+    "sm_margin_divergence", "sm_margin_decline_streak", "sm_big_holder_accumulation",
     "sm_retail_exit", "sm_volume_pullback_pattern",
+    # margin_decline_streak 的可信度/觀察細節，供除錯與之後前向驗證用，
+    # 不是加權平均會用到的核心欄位（見 smart_money.score_margin_decline_streak 說明）。
+    "sm_margin_decline_confidence", "sm_margin_decline_observation_days",
 ]
 
 
@@ -223,6 +228,8 @@ def main():
 
         print("\n[Smart Money] 計算疑似建倉分數（僅用於排序，不影響上面的入選結果）...")
         chip_hist_map = get_institutional_history(picks["code"].tolist(), calendar_days=20)
+        # 給「融資連續下降次數」因子當交易日曆用（見 smart_money.py 的說明）。
+        trading_calendar = {datetime.strptime(d, "%Y-%m-%d").date() for d in institutional_store.get_all_dates()}
         score_rows = []
         for _, r in picks.iterrows():
             code = r["code"]
@@ -237,23 +244,28 @@ def main():
                 if prev_close:
                     price_change_pct = change / prev_close
 
+            margin_decline = smart_money.score_margin_decline_streak(margin_trend, trading_calendar)
+
             components = {
                 "institutional_intensity": r.get("smart_money_f1"),
                 "institutional_streak": smart_money.score_institutional_streak(chip_hist),
                 "trust_momentum": smart_money.score_trust_momentum(chip_hist),
                 "margin_divergence": smart_money.score_margin_divergence(
                     r.get("margin_balance"), r.get("margin_balance_prev"), price_change_pct),
-                "margin_deleveraging_streak": smart_money.score_margin_deleveraging_streak(margin_trend),
+                "margin_decline_streak": margin_decline["score"],
                 "big_holder_accumulation": smart_money.score_big_holder_accumulation(sh_trend),
                 "retail_exit": smart_money.score_retail_exit(sh_trend),
                 "volume_pullback_pattern": r.get("smart_money_f8"),
             }
-            result = smart_money.aggregate(components)
+            confidences = {"margin_decline_streak": margin_decline["confidence"]}
+            result = smart_money.aggregate(components, confidences)
             score_rows.append({
                 "code": code,
                 "smart_money_score": result["score"],
                 "smart_money_coverage_pct": result["coverage_pct"],
                 **{f"sm_{k}": v for k, v in result["components"].items()},
+                "sm_margin_decline_confidence": margin_decline["confidence"],
+                "sm_margin_decline_observation_days": margin_decline["trading_day_span"],
             })
         picks = picks.merge(pd.DataFrame(score_rows), on="code", how="left")
     else:

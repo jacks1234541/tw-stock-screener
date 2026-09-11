@@ -8,7 +8,7 @@
              institutional_streak      近期三大法人「連續買超天數」
              trust_momentum            投信近 5 日買超動能（投信被視為較內行的資金）
   融資結構   margin_divergence         股價上漲、但融資餘額沒有跟著大增（排除散戶追價）
-             margin_deleveraging_streak 融資餘額連續下降天數（籌碼收斂、由大戶接手）
+             margin_decline_streak    融資餘額「連續下降次數」（見下方說明，不是連續交易日）
   大戶籌碼   big_holder_accumulation   集保大戶(100萬股以上)持股比例週增減
              retail_exit               集保散戶持股比例週增減（下降=散戶退場，反向計分）
   量價行為   volume_pullback_pattern   量縮拉回不破均線（惜售訊號），用既有技術面資料算出
@@ -31,8 +31,36 @@
 因子、把它的權重排除，由其他有資料的因子按比例分攤——分數仍然維持在
 0-100 區間，不會被「查無資料」拉低，但涵蓋率（coverage_pct）會如實
 反映這次分數是用多少比例的因子算出來的。
+
+「融資連續下降次數」因子的特殊處理（margin_decline_streak）：
+  這個因子的原始資料（margin_history.csv）只在一檔股票「進入 stage1
+  候選名單那天」才會記一筆，同一檔股票兩次被記錄之間可能隔了好幾個
+  交易日、甚至好幾週（如果它中間很少再被三大法人買超排進前 60 名）。
+  單純比較「資料庫裡最近幾筆」的數字大小，沒辦法區分「這幾天連續在
+  降」跟「剛好抽查到的幾次都在降、但其實隔了一個月」——後者的訊號
+  強度應該打折扣，不能跟前者同等看待。
+
+  因此這裡把「訊號」跟「可信度」分開算：
+    - score：下降次數本身轉成的 0-100 分數，衡量「這個訊號多強」。
+    - confidence：這幾次觀察点實際涵蓋的交易日範圍有多密集（下降
+      次數 ÷ 這段期間的交易日數），衡量「這個訊號多可信」。密集
+      （例如連續交易日都有資料且都在降）可信度接近 1；稀疏（例如
+      一個月才抽查到兩三次）可信度會接近 0。
+    - 這兩者不會混在一起：分數不會因為可信度低就被打折降低（訊號
+      強度就是訊號強度），而是在併入總分（aggregate）時，讓可信度
+      低的因子對總分的實際影響力（有效權重）跟著降低——可信度接近
+      0 時，這個因子幾乎不影響總分，效果類似「資料不足」，但分數
+      本身仍然誠實反映「目前看到的下降次數」，不會被抹成 0，避免
+      把「資料不足」跟「真的沒有下降」混為一談。
+    - 「交易日範圍」優先用 institutional_history.db 裡實際看到過的
+      交易日期當日曆算（全市場單一批次公布，可靠）；如果那份資料庫
+      還沒涵蓋到這麼久以前（例如它本身才剛開始累積），才退回用日曆
+      天數概算——日曆天數一定 >= 實際交易日數，所以這種概算只會讓
+      密度被低估、不會高估，是保守的做法。
 """
 from __future__ import annotations
+
+from datetime import date, datetime
 
 import pandas as pd
 
@@ -41,7 +69,7 @@ WEIGHTS = {
     "institutional_streak": 15,
     "trust_momentum": 10,
     "margin_divergence": 15,
-    "margin_deleveraging_streak": 10,
+    "margin_decline_streak": 10,
     "big_holder_accumulation": 15,
     "retail_exit": 5,
     "volume_pullback_pattern": 10,
@@ -52,7 +80,7 @@ FACTOR_LABELS = {
     "institutional_streak": "法人連續買超",
     "trust_momentum": "投信買超動能",
     "margin_divergence": "融資背離(價漲資不增)",
-    "margin_deleveraging_streak": "融資連續去化",
+    "margin_decline_streak": "融資連續下降次數",
     "big_holder_accumulation": "大戶籌碼增碼",
     "retail_exit": "散戶退場訊號",
     "volume_pullback_pattern": "量縮拉回不破均線",
@@ -128,22 +156,88 @@ def score_margin_divergence(margin_balance, margin_balance_prev, price_change_pc
     return _linear_score(-delta_pct, -0.05, 0.05)
 
 
-def score_margin_deleveraging_streak(margin_trend: list[dict]) -> float | None:
-    """融資餘額連續下降的天數（本地累積的每日快照才看得出來，最多算到 5 天）。
+def _trading_days_between(start: date, end: date, trading_calendar: set[date] | None) -> tuple[int, bool]:
+    """算 start（不含）到 end（含）之間經過幾個交易日。
 
-    margin_trend 需按日期由舊到新排序，每筆含 margin_balance；至少要有 3 筆
-    本地累積的紀錄才有意義（不然只是單日雜訊）。
+    回傳 (交易日數, is_exact)。trading_calendar 若有涵蓋 start 這個時間點
+    （即 start 不早於日曆最早的日期），就用日曆裡實際看到的交易日數，
+    is_exact=True；日曆沒涵蓋這麼久以前，就退回日曆天數概算，is_exact=
+    False——日曆天數一定 >= 交易日數，只會讓後續算出來的密度偏低，不會
+    偏高，是保守的近似。
     """
-    balances = [d.get("margin_balance") for d in margin_trend if d.get("margin_balance") is not None]
-    if len(balances) < 3:
-        return None
+    if trading_calendar:
+        calendar_min = min(trading_calendar)
+        if start >= calendar_min:
+            count = sum(1 for d in trading_calendar if start < d <= end)
+            return count, True
+    return (end - start).days, False
+
+
+def score_margin_decline_streak(
+    margin_trend: list[dict], trading_calendar: set[date] | None = None
+) -> dict:
+    """融資餘額「連續下降次數」，附帶可信度（見本檔案開頭「特殊處理」說明）。
+
+    margin_trend 需按日期由舊到新排序，每筆含 date（'YYYYMMDD' 字串）與
+    margin_balance；trading_calendar 是選用的交易日曆（date 物件集合），
+    用來把「下降次數」換算成「這段觀察期間有多密集」。
+
+    回傳 dict：
+      score：0-100，下降次數本身的訊號強度；None 代表資料點不足（少於
+             2 筆有效觀察），無法判斷，這跟「score=0（觀察到沒有下降）」
+             是兩件不同的事，呼叫端要分開處理，不要把「沒資料」當成
+             「確定沒有下降」。
+      confidence：0-1，觀察密度（下降次數 ÷ 涵蓋的交易日數），資料點
+             不足時為 0；「確定沒有下降」（streak=0）視為完全可信（這是
+             直接比較兩個真實數字，不涉及跨時間推論），confidence=1。
+      decline_count：這次算出的連續下降次數（原始整數，供顯示/除錯）。
+      trading_day_span：這段連續下降涵蓋的交易日數（int，用不到日曆時
+             為日曆天數概算）。
+      span_is_exact：trading_day_span 是不是用真正的交易日曆算出來的。
+    """
+    valid = [
+        (datetime.strptime(d["date"], "%Y%m%d").date(), d["margin_balance"])
+        for d in margin_trend if d.get("margin_balance") is not None
+    ]
+    valid.sort(key=lambda x: x[0])
+
+    if len(valid) < 2:
+        return {
+            "score": None, "confidence": 0.0, "decline_count": 0,
+            "trading_day_span": None, "span_is_exact": False,
+        }
+
     streak = 0
-    for i in range(len(balances) - 1, 0, -1):
-        if balances[i] < balances[i - 1]:
+    for i in range(len(valid) - 1, 0, -1):
+        if valid[i][1] < valid[i - 1][1]:
             streak += 1
         else:
             break
-    return _linear_score(streak, 0, 5)
+
+    if streak == 0:
+        # 有實際資料可以比較，而且比較結果確定是「沒有下降」（持平或上升），
+        # 這是可信的觀察，不是資料不足。
+        return {
+            "score": 0.0, "confidence": 1.0, "decline_count": 0,
+            "trading_day_span": 0, "span_is_exact": True,
+        }
+
+    window_start = valid[len(valid) - 1 - streak][0]
+    window_end = valid[-1][0]
+    span, is_exact = _trading_days_between(window_start, window_end, trading_calendar)
+    span = max(span, streak)  # 交易日數不會比觀察次數少，避免除以過小的數膨脹密度
+
+    density = streak / span if span else 0.0
+    score = _linear_score(streak, 0, 5)
+    confidence = round(_clip01(density), 3)
+
+    return {
+        "score": score,
+        "confidence": confidence,
+        "decline_count": streak,
+        "trading_day_span": span,
+        "span_is_exact": is_exact,
+    }
 
 
 def score_big_holder_accumulation(shareholding_trend: list[dict]) -> float | None:
@@ -197,12 +291,20 @@ def score_volume_pullback_pattern(hist: pd.DataFrame | None) -> float | None:
     return 0.5 * shrink_score + 0.5 * support_score
 
 
-def aggregate(components: dict[str, float | None]) -> dict:
+def aggregate(components: dict[str, float | None], confidences: dict[str, float] | None = None) -> dict:
     """把各因子的 0-100 子分數依權重加權平均成最終分數。
 
     缺資料的因子會被排除、權重由其他有資料的因子按比例分攤，所以最終
     分數永遠落在 0-100，但同時回傳 coverage_pct 讓使用者知道這次分數
     是用了多少比例的因子算出來的（涵蓋率愈低，分數的參考價值愈打折扣）。
+
+    confidences 是選用參數：某些因子除了「有沒有資料」，還有「這筆資料
+    有多可信」的問題（目前只有 margin_decline_streak 會用到，見該因子
+    的說明）。可以用因子名稱對應一個 0-1 的可信度，讓它在加權平均時的
+    「有效權重」= 原始權重 * 可信度；可信度愈低，這個因子對總分的影響
+    力愈小，但分數本身不會被打折（訊號強度跟可信度是分開的兩件事）。
+    沒有在 confidences 裡指定的因子，可信度視為 1.0，計算結果跟完全
+    不傳 confidences 時完全一樣——不影響其他因子原本的行為。
     """
     available = {k: v for k, v in components.items() if v is not None and k in WEIGHTS}
     total_weight = sum(WEIGHTS.values())
@@ -212,8 +314,20 @@ def aggregate(components: dict[str, float | None]) -> dict:
             "coverage_pct": 0.0,
             "components": {k: None for k in WEIGHTS},
         }
-    used_weight = sum(WEIGHTS[k] for k in available)
-    score = sum(WEIGHTS[k] * v for k, v in available.items()) / used_weight
+
+    confidences = confidences or {}
+    effective_weights = {k: WEIGHTS[k] * confidences.get(k, 1.0) for k in available}
+    used_weight = sum(effective_weights.values())
+    if used_weight <= 0:
+        # 可信度全部趨近 0（例如僅有的融資因子資料太零散），等同這次沒有
+        # 真正可用的因子，但仍然誠實回報各因子原始分數供參考。
+        return {
+            "score": None,
+            "coverage_pct": 0.0,
+            "components": {k: (round(components[k], 1) if components.get(k) is not None else None) for k in WEIGHTS},
+        }
+
+    score = sum(effective_weights[k] * v for k, v in available.items()) / used_weight
     return {
         "score": round(score, 1),
         "coverage_pct": round(used_weight / total_weight * 100, 1),

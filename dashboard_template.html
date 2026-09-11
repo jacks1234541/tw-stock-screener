@@ -683,7 +683,7 @@ const SM_FACTOR_LABELS = {
   institutional_streak: '法人連續買超',
   trust_momentum: '投信買超動能',
   margin_divergence: '融資背離(價漲資不增)',
-  margin_deleveraging_streak: '融資連續去化',
+  margin_decline_streak: '融資連續下降次數',
   big_holder_accumulation: '大戶籌碼增碼',
   retail_exit: '散戶退場訊號',
   volume_pullback_pattern: '量縮拉回不破均線',
@@ -711,9 +711,16 @@ function renderSmartMoney(stock){
     const v = sm.components ? sm.components[key] : null;
     const na = v == null;
     const pct = na ? 0 : Math.max(0, Math.min(100, v));
+    // 融資連續下降次數的觀察點常常隔了很多天才出現一次（這檔股票不是每天
+    // 都在候選名單裡），分數本身不打折，但額外標示可信度，讓人知道這個
+    // 分數對總分的實際影響力有沒有被自動調低（見 aggregate 的 confidences）。
+    let confNote = '';
+    if (key === 'margin_decline_streak' && !na && sm.margin_decline_confidence != null){
+      confNote = ` <span class="sm-cov">(可信度${fmtNum(sm.margin_decline_confidence * 100, 0)}%${sm.margin_decline_observation_days != null ? '，跨' + Math.round(sm.margin_decline_observation_days) + '個交易日' : ''})</span>`;
+    }
     return `
       <div class="sm-factor-row ${na ? 'na' : ''}">
-        <span class="label">${label}</span>
+        <span class="label">${label}${confNote}</span>
         <span class="sm-factor-bar"><span class="fill" style="width:${pct}%"></span></span>
         <span class="val mono">${na ? '—' : fmtNum(v, 0)}</span>
       </div>`;

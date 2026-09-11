@@ -124,11 +124,16 @@ def build_stock_payload(row: pd.Series, coverage_passes: int = 2) -> dict:
                 "institutional_streak": _num(row.get("sm_institutional_streak")),
                 "trust_momentum": _num(row.get("sm_trust_momentum")),
                 "margin_divergence": _num(row.get("sm_margin_divergence")),
-                "margin_deleveraging_streak": _num(row.get("sm_margin_deleveraging_streak")),
+                "margin_decline_streak": _num(row.get("sm_margin_decline_streak")),
                 "big_holder_accumulation": _num(row.get("sm_big_holder_accumulation")),
                 "retail_exit": _num(row.get("sm_retail_exit")),
                 "volume_pullback_pattern": _num(row.get("sm_volume_pullback_pattern")),
             },
+            # margin_decline_streak 的可信度：觀察點隔太久（交易日密度低）時，
+            # 這個因子雖然仍顯示原始分數，但對總分的實際影響力會被自動調低
+            # （見 smart_money.aggregate 的 confidences 參數）。
+            "margin_decline_confidence": _num(row.get("sm_margin_decline_confidence")),
+            "margin_decline_observation_days": _num(row.get("sm_margin_decline_observation_days")),
         },
     }
 

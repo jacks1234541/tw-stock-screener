@@ -3,9 +3,9 @@
 官方融資融券餘額通常要到晚上 21:00 左右才會產生，比每天 19:00 的主排程
 （screener.py）晚，19:00 抓到的很可能還是昨天的舊資料。screener.py 在
 執行時如果偵測到這個情況（見 margin_store.is_batch_stale），會先跳過
-記錄，把當天的「融資背離(價漲資不增)」「融資連續去化」這兩個 Smart
-Money 因子留白（視為缺資料，權重轉給其他因子），不會用錯位的舊資料
-硬算分數。
+記錄，把當天的「融資背離(價漲資不增)」「融資連續下降次數」這兩個
+Smart Money 因子留白（視為缺資料，權重轉給其他因子），不會用錯位的
+舊資料硬算分數。
 
 這支腳本在資料應該已經公布之後（23:30）重新抓一次，如果確認新鮮了，
 就把它補進 data/margin_history.csv、重新算這兩個因子與總分，更新今天
@@ -26,8 +26,11 @@ from __future__ import annotations
 
 import sys
 
+from datetime import datetime
+
 import pandas as pd
 
+import institutional_store
 import smart_money
 import smart_money_log
 from data_sources import get_margin_balance
@@ -66,6 +69,7 @@ def main() -> int:
     print("重新計算融資相關的 Smart Money 因子與總分...")
     picks = picks.set_index("code")
     margin_picks = margin_picks.set_index("code")
+    trading_calendar = {datetime.strptime(d, "%Y-%m-%d").date() for d in institutional_store.get_all_dates()}
 
     for code in picks.index:
         margin_balance = margin_picks.loc[code, "margin_balance"] if code in margin_picks.index else None
@@ -81,6 +85,7 @@ def main() -> int:
             price_change_pct = change / (close - change)
 
         margin_trend = load_trend(code)
+        margin_decline = smart_money.score_margin_decline_streak(margin_trend, trading_calendar)
 
         components = {
             "institutional_intensity": picks.loc[code, "sm_institutional_intensity"],
@@ -88,19 +93,22 @@ def main() -> int:
             "trust_momentum": picks.loc[code, "sm_trust_momentum"],
             "margin_divergence": smart_money.score_margin_divergence(
                 margin_balance, margin_balance_prev, price_change_pct),
-            "margin_deleveraging_streak": smart_money.score_margin_deleveraging_streak(margin_trend),
+            "margin_decline_streak": margin_decline["score"],
             "big_holder_accumulation": picks.loc[code, "sm_big_holder_accumulation"],
             "retail_exit": picks.loc[code, "sm_retail_exit"],
             "volume_pullback_pattern": picks.loc[code, "sm_volume_pullback_pattern"],
         }
         # CSV 讀回來的缺資料是 NaN，aggregate() 要看到 None 才會正確判斷「這個因子沒資料」。
         components = {k: (None if isinstance(v, float) and pd.isna(v) else v) for k, v in components.items()}
+        confidences = {"margin_decline_streak": margin_decline["confidence"]}
 
-        result = smart_money.aggregate(components)
+        result = smart_money.aggregate(components, confidences)
         picks.loc[code, "margin_balance"] = margin_balance
         picks.loc[code, "margin_balance_prev"] = margin_balance_prev
         picks.loc[code, "smart_money_score"] = result["score"]
         picks.loc[code, "smart_money_coverage_pct"] = result["coverage_pct"]
+        picks.loc[code, "sm_margin_decline_confidence"] = margin_decline["confidence"]
+        picks.loc[code, "sm_margin_decline_observation_days"] = margin_decline["trading_day_span"]
         for k, v in result["components"].items():
             picks.loc[code, f"sm_{k}"] = v
 

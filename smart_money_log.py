@@ -17,8 +17,9 @@ COLUMNS = [
     "trade_date", "code", "name", "close",
     "smart_money_score", "smart_money_coverage_pct",
     "sm_institutional_intensity", "sm_institutional_streak", "sm_trust_momentum",
-    "sm_margin_divergence", "sm_margin_deleveraging_streak", "sm_big_holder_accumulation",
+    "sm_margin_divergence", "sm_margin_decline_streak", "sm_big_holder_accumulation",
     "sm_retail_exit", "sm_volume_pullback_pattern",
+    "sm_margin_decline_confidence", "sm_margin_decline_observation_days",
 ]
 
 

@@ -71,6 +71,23 @@ def store_date(d: date, df: pd.DataFrame) -> int:
     return len(rows)
 
 
+def get_all_dates() -> set[str]:
+    """回傳本地看過的所有交易日期（ISO 'YYYY-MM-DD'）。
+
+    三大法人資料是全市場單一批次公布，本地存在的日期基本上就等於真實
+    交易日，可以直接當成一份「交易日曆」用——給 smart_money.py 算「兩筆
+    融資觀察資料之間實際經過幾個交易日」時使用，不需要另外維護一份
+    交易日資料表。這份「日曆」的涵蓋範圍取決於這個資料庫開始累積的
+    時間點，太久遠的日期本來就不在裡面，屬於已知限制。
+    """
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT DISTINCT date FROM institutional_net").fetchall()
+    finally:
+        conn.close()
+    return {r[0] for r in rows}
+
+
 def get_reference_day_counts() -> dict[str, int]:
     """回傳每個「年-月」本地看到過幾個不同的交易日。
 
