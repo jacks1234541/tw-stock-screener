@@ -249,7 +249,7 @@
     </table>
   </div>
 
-  <div class="card detail">
+  <div class="card detail" id="detailCard">
     <div class="detail-head">
       <div class="title">
         <span class="name" id="dName">—</span>
@@ -425,7 +425,10 @@ function renderTable(){
       <td class="mono">${s.shareholding && s.shareholding.retail_shares_pct != null ? fmtNum(s.shareholding.retail_shares_pct,2)+'%' : '—'}</td>
       <td>${renderSmartMoneyBadge(s.smart_money)}</td>
     `;
-    tr.addEventListener('click', () => selectStock(s.code));
+    tr.addEventListener('click', () => {
+      selectStock(s.code);
+      document.getElementById('detailCard').scrollIntoView({behavior: 'smooth', block: 'start'});
+    });
     tbody.appendChild(tr);
   });
 }
