@@ -12,6 +12,8 @@ from datetime import date, timedelta
 import pandas as pd
 import requests
 
+import price_store
+
 TWSE_OPENAPI = "https://openapi.twse.com.tw/v1"
 TWSE_RWD = "https://www.twse.com.tw/rwd/zh"
 TDCC_OPENAPI = "https://openapi.tdcc.com.tw/v1/opendata"
@@ -241,24 +243,39 @@ def shareholding_summary(dist: pd.DataFrame, code: str) -> dict | None:
 def get_stock_history(stock_no: str, months: int = 4, coverage_passes: int = 2) -> pd.DataFrame:
     """單一股票近 N 個月的日線資料（技術指標計算用）。
 
-    為了降低資料中間出現「缺月份」破洞的機率（會讓 MA60 等指標算錯、
-    也會讓同一天重跑好幾次結果不一致），如果第一輪抓完還有月份沒拿到，
-    會再等一小段時間、針對「還缺的月份」單獨重試一次（coverage_passes=2）。
+    本地用 price_store.py（SQLite）累積每次抓到的資料：只有「本月」每次
+    都需要重抓（因為本月每天都會多一天新資料出來），更早的月份只要本地
+    已經有資料就直接沿用、不再打 API。這把每檔股票平常的 API 呼叫量從
+    固定 N 次砍到通常只剩 1 次，同時大幅降低被限流、產生「缺月份」的
+    機率——也讓同一次執行內（例如 screener.py 抓過的股票，build_dashboard.py
+    接著處理同一批股票）不會為了同一批資料重複打兩次 API。
 
-    這裡刻意不做太多輪、每輪等待也不長：如果真的遇到大範圍限流或官方
-    主機封鎖（例如 WAF 擋下所有請求），重試太多輪會讓單一檔股票卡上
-    好幾分鐘，60 檔候選股疊加起來可能拖成好幾小時。真正需要「同一天
-    重跑結果要一致」這種可靠度時，交給呼叫端（screener.py 的
-    stage2_technical_filter）用全域時間預算來控制，而不是在這裡無限重試。
+    如果某檔股票是本地第一次查、或本地累積的月份還不夠 N 個月，那些
+    缺的月份還是得照樣整批抓，行為跟以前一樣：如果第一輪抓完還有月份
+    沒拿到，會再等一小段時間、針對「還缺的月份」單獨重試一次
+    （coverage_passes=2）。這裡刻意不做太多輪、每輪等待也不長：如果真的
+    遇到大範圍限流或官方主機封鎖（例如 WAF 擋下所有請求），重試太多輪
+    會讓單一檔股票卡上好幾分鐘，60 檔候選股疊加起來可能拖成好幾小時。
+    真正需要「同一天重跑結果要一致」這種可靠度時，交給呼叫端
+    （screener.py 的 stage2_technical_filter）用全域時間預算來控制，而
+    不是在這裡無限重試。
+
+    取捨：本地某個月份只要存過「至少一天」就視為「這個月涵蓋了」，不會
+    每次都去檢查那個月是不是每個交易日都存到——如果某次執行遇到限流、
+    某個歷史月份只抓到一部分天數，之後也不會自動回頭補洞，資料完整度
+    只會隨著之後每天執行往前滾動變好，不會反過來修補久遠的舊缺口。
     """
     month_cursors = []
     cursor = date.today().replace(day=1)
     for _ in range(months):
         month_cursors.append(cursor)
         cursor = (cursor - timedelta(days=1)).replace(day=1)
+    current_month = month_cursors[0]
+
+    covered = price_store.get_covered_months(stock_no)
+    pending = [m for m in month_cursors if m == current_month or m not in covered]
 
     frames_by_month: dict[date, pd.DataFrame] = {}
-    pending = list(month_cursors)
 
     for pass_num in range(coverage_passes):
         if not pending:
@@ -284,17 +301,17 @@ def get_stock_history(stock_no: str, months: int = 4, coverage_passes: int = 2) 
     if pending:
         print(f"    警告：{stock_no} 有 {len(pending)} 個月份的資料最終仍抓不到，這次歷史資料會有缺口")
 
-    if not frames_by_month:
-        return pd.DataFrame()
+    if frames_by_month:
+        fetched = pd.concat(frames_by_month.values(), ignore_index=True)
+        fetched = fetched.rename(columns={
+            "日期": "date", "成交股數": "volume", "成交金額": "amount",
+            "開盤價": "open", "最高價": "high", "最低價": "low",
+            "收盤價": "close", "漲跌價差": "change", "成交筆數": "transactions",
+        })
+        fetched["date"] = fetched["date"].map(_roc_to_date)
+        for col in ["volume", "amount", "open", "high", "low", "close", "transactions"]:
+            fetched[col] = fetched[col].map(_to_number)
+        fetched = fetched.dropna(subset=["close"])
+        price_store.upsert_daily_rows(stock_no, fetched)
 
-    hist = pd.concat(frames_by_month.values(), ignore_index=True)
-    hist = hist.rename(columns={
-        "日期": "date", "成交股數": "volume", "成交金額": "amount",
-        "開盤價": "open", "最高價": "high", "最低價": "low",
-        "收盤價": "close", "漲跌價差": "change", "成交筆數": "transactions",
-    })
-    hist["date"] = hist["date"].map(_roc_to_date)
-    for col in ["volume", "amount", "open", "high", "low", "close", "transactions"]:
-        hist[col] = hist[col].map(_to_number)
-    hist = hist.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
-    return hist
+    return price_store.load_history(stock_no, months=months)
